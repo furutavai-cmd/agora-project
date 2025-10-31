@@ -1,0 +1,31 @@
+name: Agora Bot - Discussion Welcomer
+
+# このBotが起動するキッカケ (トリガー)
+on:
+  discussion_comment:
+    types: [created] # Discussionsで新しいコメントが作成された時
+
+jobs:
+  welcome-comment:
+    runs-on: ubuntu-latest
+
+    # GitHubのDiscussionsに書き込む権限を与える
+    permissions:
+      discussions: write
+
+    steps:
+      - name: Post Welcome Comment
+        run: |
+          gh discussion comment ${{ github.event.comment.html_url }} --body "
+          :wave: **この「広場（アゴラ）」へのご意見ありがとうございます！**
+
+          私たちは「和（徹底的議論）」の精神（[CONTRIBUTING.md](httpsHA://github.com/furutavai-cmd/agora-project/blob/main/CONTRIBUTING.md)）を大切にしています。
+
+          あなたの「善意」あるご意見が、より良い「総意」へと結実するのを楽しみにしています。
+
+          ---
+          *（これは「和」の精神をリマインドする自動Botです）*
+          "
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
