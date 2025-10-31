@@ -1,0 +1,101 @@
+name: Agora Bot - Tally
+
+on:
+  discussion_comment:
+    types: [created]
+
+# 権限の追加
+permissions:
+  discussions: write # 読み書き両方が必要
+
+jobs:
+  tally-bot:
+    runs-on: ubuntu-latest
+    # @agora-bot で始まるコメントのみを対象にする
+    if: startsWith(github.event.comment.body, '@agora-bot')
+
+    steps:
+      # --- ステップ1： 投票を開始する ---
+      - name: Start Vote
+        if: startsWith(github.event.comment.body, '@agora-bot 投票を開始')
+        run: |
+          gh discussion comment ${{ github.event.discussion.html_url }} --body "
+          🗳️ **「総意」形成のための「投票」を開始します** 🗳️
+
+          このBotのコメントに「リアクション（絵文字）」を付けてください。
+          （議論が熟した後、`@agora-bot 投票を締切` コマンドで集計できます）
+
+          * 👍 **賛成** (この案で進めるべき)
+          * 👎 **反対** (この案には重大な課題がある)
+          * 🤔 **要議論** (論点が不明確、または判断材料が不足)
+
+          ---
+          *（これは投票所Botです）*
+          "
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+
+      # --- ステップ2： 投票を締め切り、集計する ---
+      - name: End Vote
+        if: startsWith(github.event.comment.body, '@agora-bot 投票を締切')
+        run: |
+          # --- 1. 投票所のコメントIDを探す ---
+          echo "Finding the last voting booth comment..."
+          VOTE_COMMENT_ID=$(gh api "repos/${{ github.repository }}/discussions/${{ github.event.discussion.number }}/comments" \
+            --jq 'map(select(.user.login == "github-actions[bot]" and contains("投票を開始します"))) | last | .id')
+
+          if [ -z "$VOTE_COMMENT_ID" ] || [ "$VOTE_COMMENT_ID" == "null" ]; then
+            echo "Voting booth comment not found. Exiting."
+            gh discussion comment ${{ github.event.discussion.html_url }} --body "
+            :warning: **エラー：** 集計対象の「投票所」コメントが見つかりませんでした。
+
+            先に `@agora-bot 投票を開始` を実行してください。
+            "
+            exit 1
+          fi
+          echo "Voting booth comment ID: $VOTE_COMMENT_ID"
+
+          # --- 2. リアクションを取得する ---
+          echo "Fetching reactions..."
+          # APIのプレビュー版ヘッダーが必要
+          REACTIONS_JSON=$(gh api "repos/${{ github.repository }}/discussions/comments/${VOTE_COMMENT_ID}/reactions" \
+            -H "Accept: application/vnd.github.squirrel-girl-preview+json")
+
+          # --- 3. 集計する ---
+          # (APIでは「🤔」は「confused」として集計されます)
+          THUMBS_UP=$(echo "$REACTIONS_JSON" | jq 'map(select(.content == "+1")) | length')
+          THUMBS_DOWN=$(echo "$REACTIONS_JSON" | jq 'map(select(.content == "-1")) | length')
+          THINKING=$(echo "$REACTIONS_JSON" | jq 'map(select(.content == "confused")) | length')
+          TOTAL_VOTES=$((THUMBS_UP + THUMBS_DOWN + THINKING))
+
+          echo "Tally: +1: $THUMBS_UP, -1: $THUMBS_DOWN, confused: $THINKING, Total: $TOTAL_VOTES"
+
+          # --- 4. 結果のメッセージを作成する ---
+          MESSAGE_BODY="## 🗳️ 投票結果 🗳️\n\n"
+          MESSAGE_BODY+="* 👍 **賛成:** $THUMBS_UP 票\n"
+          MESSAGE_BODY+="* 👎 **反対:** $THUMBS_DOWN 票\n"
+          MESSAGE_BODY+="* 🤔 **要議論:** $THINKING 票\n"
+          MESSAGE_BODY+="*\n---*\n"
+          MESSAGE_BODY+="### **総意の分析（推奨アクション）**\n\n"
+
+          # --- 5. パターンA, B, C のロジック ---
+          if [ $TOTAL_VOTES -eq 0 ]; then
+            MESSAGE_BODY+="**【パターンD】投票がありませんでした。** 議論が十分でないか、投票の告知が不足していたようです。再度議論を深めてください。"
+          elif [ $THUMBS_UP -gt $THUMBS_DOWN ] && [ $THUMBS_UP -gt $THINKING ]; then
+            MESSAGE_BODY+="**【パターンA】賛成多数です。** \n「総意」が形成されたとみなし、この内容を「実行タスク（Issue）」として作成（`New Issue`）することを推奨します。"
+          elif [ $THUMBS_DOWN -gt $THUMBS_UP ] && [ $THUMBS_DOWN -gt $THINKING ]; then
+            MESSAGE_BODY+="**【パターンB】反対が多数です。** \n「和」の精神に基づき、議論の継続を推奨します。反対（👎）された方は、**「なぜ」反対なのか、その「課題」の言語化（浄化）**にご協力ください。"
+          elif [ $THINKING -gt $THUMBS_UP ] && [ $THINKING -gt $THUMBS_DOWN ]; then
+            MESSAGE_BODY+="**【パターンC】要議論が多数です。** \n論点が不明確、または判断材料が不足しているようです。**「何が」不明確なのか**、論点の再整理と議論の継続を推奨します。"
+          else
+            MESSAGE_BODY+="**【パターンE】意見が拮抗しています。** \n「和」の精神に基づき、議論の継続を推奨します。賛成派・反対派・要議論派が、お互いの論点を再確認し、「高次の総意（第3の案）」を目指してください。"
+          fi
+
+          # --- 6. 結果をコメントする ---
+          echo "$MESSAGE_BODY"
+          # ghコマンドは改行を正しく扱うために `"$MESSAGE_BODY"` とクォートする必要がある
+          gh discussion comment ${{ github.event.discussion.html_url }} --body "$MESSAGE_BODY"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
